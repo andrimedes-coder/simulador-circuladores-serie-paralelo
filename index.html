@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simulador Hidráulico de Calefacción</title>
+  
+  <!-- Carga de Tailwind CSS para los estilos -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Carga de React y ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Carga de Babel para procesar el código JSX en el navegador -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* Estilos globales y animaciones de las tuberías */
+    body { margin: 0; padding: 0; background-color: #f8fafc; }
+    
+    @keyframes flow-right {
+      from { stroke-dashoffset: 24; }
+      to { stroke-dashoffset: 0; }
+    }
+    @keyframes flow-left {
+      from { stroke-dashoffset: 0; }
+      to { stroke-dashoffset: 24; }
+    }
+    .animate-flow-ida {
+      stroke-dasharray: 12 12;
+      animation: flow-right 0.8s linear infinite;
+    }
+    .animate-flow-retorno {
+      stroke-dasharray: 12 12;
+      animation: flow-left 0.8s linear infinite;
+    }
+    .animate-flow-error-ida {
+      stroke-dasharray: 8 8;
+      animation: flow-right 0.3s linear infinite;
+    }
+    .animate-flow-error-retorno {
+      stroke-dasharray: 8 8;
+      animation: flow-left 0.3s linear infinite;
+    }
+    .pulse-error {
+      animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .5; }
+    }
+    .pulse-extreme {
+      animation: pulse-extreme 0.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    @keyframes pulse-extreme {
+      0%, 100% { transform: scale(1); fill: #991b1b; }
+      50% { transform: scale(1.1); fill: #ef4444; }
+    }
+  </style>
+</head>
+<body>
+  
+  <!-- Contenedor donde React renderizará la App -->
+  <div id="root"></div>
+
+  <!-- Código de la Aplicación -->
+  <script type="text/babel">
+    const { useState } = React;
+
+    const PumpSimulation = () => {
+      const [config, setConfig] = useState('open');
+
+      // Datos de la simulación basados en un sistema de 35 kW y 3 bombas
+      const simulationData = {
+        open: {
+          title: "Colector Abierto (con Aguja Hidráulica)",
+          description: "La aguja hidráulica actúa como punto de presión neutra. Desacopla la bomba de la caldera de las bombas de zona. La bomba de la caldera impulsa el circuito primario, mientras que Z1 y Z2 impulsan sus sectores. No hay interferencia y cada circuito mantiene su caudal óptimo.",
+          systemFlow: "1.60",
+          totalPower: "135",
+          pumpBoiler: { flow: "1.60", pIn: "1.20", pOut: "1.50", deltaP: "0.30", power: "45" },
+          pump1: { flow: "0.80", pIn: "1.45", pOut: "1.80", deltaP: "0.35", power: "45" },
+          pump2: { flow: "0.80", pIn: "1.45", pOut: "1.80", deltaP: "0.35", power: "45" },
+          status: "ÓPTIMO (Circuitos Desacoplados)",
+          statusColor: "text-green-700 bg-green-100 border-green-400"
+        },
+        closed: {
+          title: "Colector Cerrado (Bombas Iguales en Serie)",
+          description: "Al no tener separación hidráulica, la bomba de la caldera empuja directamente el agua hacia la aspiración de Z1 y Z2. Las bombas entran en SERIE. Esto suma las presiones drásticamente, provoca sobrepresión en los sectores (ruidos en válvulas) y obliga a las bombas a trabajar forzadas o desequilibradas.",
+          systemFlow: "1.30",
+          totalPower: "175",
+          pumpBoiler: { flow: "1.30", pIn: "1.20", pOut: "1.65", deltaP: "0.45", power: "65" },
+          pump1: { flow: "0.65", pIn: "1.60", pOut: "2.10", deltaP: "0.50", power: "55" },
+          pump2: { flow: "0.65", pIn: "1.60", pOut: "2.10", deltaP: "0.50", power: "55" },
+          status: "NO RECOMENDADO (Riesgo de Sobrepresión)",
+          statusColor: "text-red-700 bg-red-100 border-red-400"
+        },
+        overpowered: {
+          title: "Colector Cerrado (BC Muy Potente)",
+          description: "PELIGRO EXTREMO: La bomba de la caldera es mucho más grande que Z1 y Z2. Sin aguja hidráulica, la enorme presión de la BC inunda la aspiración de las bombas pequeñas. La BC está haciendo todo el trabajo e intenta pasar a la fuerza todo su caudal por bombas que actúan como cuellos de botella.",
+          systemFlow: "2.20",
+          totalPower: "260",
+          pumpBoiler: { flow: "2.20", pIn: "1.20", pOut: "2.80", deltaP: "1.60", power: "180" },
+          pump1: { flow: "1.10", pIn: "2.70", pOut: "2.85", deltaP: "0.15", power: "40" },
+          pump2: { flow: "1.10", pIn: "2.70", pOut: "2.85", deltaP: "0.15", power: "40" },
+          status: "PELIGRO CRÍTICO (Efecto Turbina)",
+          statusColor: "text-purple-700 bg-purple-100 border-purple-500"
+        }
+      };
+
+      const currentData = simulationData[config];
+
+      // Función para descargar el informe (ahora con el esquema incluido)
+      const downloadHTMLReport = () => {
+        const statusColorClass = 
+          config === 'open' ? 'bg-green-50 border-green-200 text-green-800' : 
+          config === 'overpowered' ? 'bg-purple-50 border-purple-300 text-purple-900' : 
+          'bg-red-50 border-red-200 text-red-800';
+
+        // Capturamos el SVG actual del DOM para incluirlo en el reporte
+        const diagramElement = document.getElementById('diagram-container');
+        const diagramHTML = diagramElement ? diagramElement.innerHTML : '';
+
+        const htmlContent = `
+          <!DOCTYPE html>
+          <html lang="es">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Informe - Simulación Hidráulica</title>
+            <script src="https://cdn.tailwindcss.com"><\/script>
+            <style>
+              /* Incluir animaciones en el export */
+              @keyframes flow-right { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+              @keyframes flow-left { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 24; } }
+              .animate-flow-ida { stroke-dasharray: 12 12; animation: flow-right 0.8s linear infinite; }
+              .animate-flow-retorno { stroke-dasharray: 12 12; animation: flow-left 0.8s linear infinite; }
+              .animate-flow-error-ida { stroke-dasharray: 8 8; animation: flow-right 0.3s linear infinite; }
+              .animate-flow-error-retorno { stroke-dasharray: 8 8; animation: flow-left 0.3s linear infinite; }
+              .pulse-extreme { animation: pulse-extreme 0.5s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+              @keyframes pulse-extreme { 0%, 100% { transform: scale(1); fill: #991b1b; } 50% { transform: scale(1.1); fill: #ef4444; } }
+            </style>
+          </head>
+          <body class="bg-slate-100 p-4 md:p-8 font-sans text-slate-800">
+            <div class="max-w-5xl mx-auto bg-white p-6 md:p-10 rounded-2xl shadow-md border border-slate-200">
+              <header class="mb-8 border-b border-slate-100 pb-6">
+                <h1 class="text-3xl font-bold text-slate-900 mb-2">Informe de Simulación Hidráulica</h1>
+                <p class="text-slate-500">Sistema: Caldera 35 kW → Colector → Radiadores (Z1) + Calefacción (Z2)</p>
+              </header>
+
+              <div class="mb-8 p-5 rounded-xl border ${statusColorClass}">
+                <h2 class="text-2xl font-bold mb-2">${currentData.title}</h2>
+                <p class="mb-4 leading-relaxed">${currentData.description}</p>
+                <div class="inline-block px-3 py-1 bg-white/60 rounded text-sm font-bold border border-current shadow-sm">
+                  ESTADO: ${currentData.status}
+                </div>
+              </div>
+
+              <!-- Esquema Hidráulico inyectado -->
+              <h3 class="text-xl font-bold mb-4 text-slate-800 border-b border-slate-100 pb-2">Esquema de Flujo</h3>
+              <div class="w-full overflow-x-auto mb-8 bg-slate-50 p-4 rounded-xl border border-slate-200 flex justify-center">
+                <div style="min-width: 700px; height: 350px; position: relative;">
+                  ${diagramHTML}
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                <div class="bg-slate-50 p-5 rounded-xl border border-slate-200 flex items-center justify-between">
+                  <span class="text-xs font-bold text-slate-500 uppercase">Caudal Primario</span>
+                  <span class="text-2xl font-black">${currentData.systemFlow} <span class="text-base font-normal text-slate-400">m³/h</span></span>
+                </div>
+                <div class="bg-slate-50 p-5 rounded-xl border border-slate-200 flex items-center justify-between">
+                  <span class="text-xs font-bold text-slate-500 uppercase">Consumo Eléctrico</span>
+                  <span class="text-2xl font-black text-orange-600">${currentData.totalPower} <span class="text-base font-normal text-slate-400">W</span></span>
+                </div>
+              </div>
+
+              <h3 class="text-xl font-bold mb-4 text-slate-800 border-b border-slate-100 pb-2">Datos Operativos por Bomba</h3>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
+                <!-- Bomba Caldera -->
+                <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                  <h4 class="font-bold text-slate-700 mb-3 flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-red-500"></span> Bomba Caldera
+                  </h4>
+                  <ul class="text-sm space-y-2 text-slate-600">
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>Caudal:</span> <strong>${currentData.pumpBoiler.flow} m³/h</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>P. Entrada:</span> <strong>${currentData.pumpBoiler.pIn} bar</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>P. Salida:</span> <strong>${currentData.pumpBoiler.pOut} bar</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>ΔP:</span> <strong>+${currentData.pumpBoiler.deltaP} bar</strong></li>
+                    <li class="flex justify-between pt-1"><span>Potencia:</span> <strong class="text-orange-600">${currentData.pumpBoiler.power} W</strong></li>
+                  </ul>
+                </div>
+                <!-- Z1 -->
+                <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                  <h4 class="font-bold text-slate-700 mb-3 flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-blue-500"></span> Z1 (Radiadores)
+                  </h4>
+                  <ul class="text-sm space-y-2 text-slate-600">
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>Caudal:</span> <strong>${currentData.pump1.flow} m³/h</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>P. Entrada:</span> <strong>${currentData.pump1.pIn} bar</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>P. Salida:</span> <strong>${currentData.pump1.pOut} bar</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>ΔP:</span> <strong>+${currentData.pump1.deltaP} bar</strong></li>
+                    <li class="flex justify-between pt-1"><span>Potencia:</span> <strong class="text-orange-600">${currentData.pump1.power} W</strong></li>
+                  </ul>
+                </div>
+                <!-- Z2 -->
+                <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                  <h4 class="font-bold text-slate-700 mb-3 flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-blue-500"></span> Z2 (Calefacción)
+                  </h4>
+                  <ul class="text-sm space-y-2 text-slate-600">
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>Caudal:</span> <strong>${currentData.pump2.flow} m³/h</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>P. Entrada:</span> <strong>${currentData.pump2.pIn} bar</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>P. Salida:</span> <strong>${currentData.pump2.pOut} bar</strong></li>
+                    <li class="flex justify-between border-b border-slate-50 pb-1"><span>ΔP:</span> <strong>+${currentData.pump2.deltaP} bar</strong></li>
+                    <li class="flex justify-between pt-1"><span>Potencia:</span> <strong class="text-orange-600">${currentData.pump2.power} W</strong></li>
+                  </ul>
+                </div>
+              </div>
+
+              <footer class="mt-12 text-center text-xs text-slate-400">
+                <p>Generado automáticamente por el Simulador Hidráulico de Circuladores</p>
+              </footer>
+            </div>
+          </body>
+          </html>
+        `;
+
+        // Descargar el archivo .html
+        const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `informe-simulacion-${config}.html`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      };
+
+      // Iconos
+      const PumpIcon = ({ className }) => (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 3v18" />
+          <path d="m12 12 6-6" />
+          <path d="m12 12-6 6" />
+        </svg>
+      );
+
+      return (
+        <div className="min-h-screen p-4 md:p-8 font-sans text-slate-800">
+          <div className="max-w-6xl mx-auto space-y-6">
+            
+            {/* Encabezado */}
+            <header className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
+              <div className="flex-1">
+                <h1 className="text-2xl font-bold text-slate-900">Diagrama Hidráulico Interactivo</h1>
+                <p className="text-slate-500 mt-1">Caldera 35 kW → Colector → Radiadores (Z1) + Calefacción (Z2)</p>
+              </div>
+              
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+                <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 w-full sm:w-auto flex-wrap gap-1">
+                  <button 
+                    onClick={() => setConfig('open')}
+                    className={`flex-1 md:flex-none px-4 py-2.5 rounded-md text-sm font-semibold transition-all ${config === 'open' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-white'}`}
+                  >
+                    Abierto (Aguja)
+                  </button>
+                  <button 
+                    onClick={() => setConfig('closed')}
+                    className={`flex-1 md:flex-none px-4 py-2.5 rounded-md text-sm font-semibold transition-all ${config === 'closed' ? 'bg-red-600 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-white'}`}
+                  >
+                    Cerrado (Iguales)
+                  </button>
+                  <button 
+                    onClick={() => setConfig('overpowered')}
+                    className={`flex-1 md:flex-none px-4 py-2.5 rounded-md text-sm font-semibold transition-all ${config === 'overpowered' ? 'bg-purple-700 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-white'}`}
+                  >
+                    Cerrado (BC Muy Potente)
+                  </button>
+                </div>
+
+                {/* Botón de Exportación a HTML */}
+                <button
+                  onClick={downloadHTMLReport}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors shadow-sm text-sm font-semibold whitespace-nowrap"
+                  title="Descargar informe actual como archivo HTML"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  Exportar Reporte
+                </button>
+              </div>
+            </header>
+
+            {/* DIAGRAMA ANIMADO SVG HORIZONTAL */}
+            <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+              <div className="w-full overflow-x-auto" id="diagram-container">
+                <div className="min-w-[700px] h-[350px] bg-slate-50 rounded-xl border border-slate-200 relative flex items-center justify-center p-4">
+                  <svg viewBox="0 0 650 350" className="w-full h-full">
+                    
+                    {/* --- FONDOS DE TUBERÍAS (GRIS) --- */}
+                    {/* Primario */}
+                    <path d="M 110 150 L 250 150" fill="none" stroke="#cbd5e1" strokeWidth="10" />
+                    <path d="M 250 280 L 110 280" fill="none" stroke="#cbd5e1" strokeWidth="10" />
+                    
+                    {/* Secundario */}
+                    {config === 'open' ? (
+                      <React.Fragment>
+                        <path d="M 290 150 L 330 150 L 330 80 L 450 80" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                        <path d="M 290 150 L 330 150 L 330 220 L 450 220" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                        <path d="M 530 80 L 600 80 L 600 280 L 290 280" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                        <path d="M 530 220 L 570 220 L 570 280 L 290 280" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                      </React.Fragment>
+                    ) : (
+                      <React.Fragment>
+                        <path d="M 250 150 L 330 150 L 330 80 L 450 80" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                        <path d="M 250 150 L 330 150 L 330 220 L 450 220" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                        <path d="M 530 80 L 600 80 L 600 280 L 250 280" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                        <path d="M 530 220 L 570 220 L 570 280 L 250 280" fill="none" stroke="#cbd5e1" strokeWidth="10" strokeLinejoin="round" />
+                      </React.Fragment>
+                    )}
+
+                    {/* --- ANIMACIONES DE FLUIDO --- */}
+                    {/* Primario Animado */}
+                    <path d="M 110 150 L 250 150" fill="none" stroke={config==='open'?"#ef4444":(config==='overpowered'?"#7e22ce":"#dc2626")} strokeWidth="6" className={config==='open'?"animate-flow-ida":"animate-flow-error-ida"} />
+                    <path d="M 250 280 L 110 280" fill="none" stroke={config==='overpowered'?"#6b21a8":"#3b82f6"} strokeWidth="6" className={config==='open'?"animate-flow-retorno":"animate-flow-error-retorno"} />
+                    
+                    {/* Secundario Animado */}
+                    {config === 'open' ? (
+                      <React.Fragment>
+                        <path d="M 290 150 L 330 150 L 330 80 L 450 80" fill="none" stroke="#ef4444" strokeWidth="6" strokeLinejoin="round" className="animate-flow-ida" />
+                        <path d="M 290 150 L 330 150 L 330 220 L 450 220" fill="none" stroke="#ef4444" strokeWidth="6" strokeLinejoin="round" className="animate-flow-ida" />
+                        <path d="M 530 80 L 600 80 L 600 280 L 290 280" fill="none" stroke="#3b82f6" strokeWidth="6" strokeLinejoin="round" className="animate-flow-retorno" />
+                        <path d="M 530 220 L 570 220 L 570 280 L 290 280" fill="none" stroke="#3b82f6" strokeWidth="6" strokeLinejoin="round" className="animate-flow-retorno" />
+                        <path d="M 270 150 L 270 280" fill="none" stroke="#a855f7" strokeWidth="4" strokeDasharray="4 4" className="animate-flow-ida opacity-50" />
+                      </React.Fragment>
+                    ) : (
+                      <React.Fragment>
+                        <path d="M 250 150 L 330 150 L 330 80 L 450 80" fill="none" stroke={config==='overpowered'?"#9333ea":"#dc2626"} strokeWidth="6" strokeLinejoin="round" className="animate-flow-error-ida" />
+                        <path d="M 250 150 L 330 150 L 330 220 L 450 220" fill="none" stroke={config==='overpowered'?"#9333ea":"#dc2626"} strokeWidth="6" strokeLinejoin="round" className="animate-flow-error-ida" />
+                        <path d="M 530 80 L 600 80 L 600 280 L 250 280" fill="none" stroke={config==='overpowered'?"#7e22ce":"#2563eb"} strokeWidth="6" strokeLinejoin="round" className="animate-flow-error-retorno" />
+                        <path d="M 530 220 L 570 220 L 570 280 L 250 280" fill="none" stroke={config==='overpowered'?"#7e22ce":"#2563eb"} strokeWidth="6" strokeLinejoin="round" className="animate-flow-error-retorno" />
+                      </React.Fragment>
+                    )}
+
+                    {/* --- COMPONENTES DEL SISTEMA --- */}
+                    
+                    {/* 1. Caldera */}
+                    <rect x="20" y="110" width="90" height="210" fill="#f97316" rx="8" />
+                    <text x="65" y="140" fill="white" fontSize="14" fontWeight="bold" textAnchor="middle">Caldera</text>
+                    <text x="65" y="160" fill="white" fontSize="12" textAnchor="middle">35 kW</text>
+                    <text x="120" y="140" fill="#ef4444" fontSize="10" fontWeight="bold">Ida Principal</text>
+                    <text x="120" y="270" fill="#3b82f6" fontSize="10" fontWeight="bold">Retorno Principal</text>
+
+                    {/* 2. Bomba Caldera */}
+                    <g style={{ transformOrigin: '180px 150px' }} className={config === 'overpowered' ? 'pulse-extreme' : ''}>
+                      <circle cx="180" cy="150" r={config === 'overpowered' ? 24 : 18} fill={config === 'overpowered' ? '#7e22ce' : '#ef4444'} stroke="#ffffff" strokeWidth="2" className={config === 'closed' ? "pulse-error" : ""} />
+                      <text x="180" y={config === 'overpowered' ? 155 : 154} fill="white" fontSize={config === 'overpowered' ? 14 : 12} fontWeight="bold" textAnchor="middle">BC</text>
+                    </g>
+                    <text x="180" y="185" fill={config === 'overpowered' ? '#7e22ce' : '#64748b'} fontSize="10" fontWeight="bold" textAnchor="middle">{config === 'overpowered' ? 'BC SOBREDIMENSIONADA' : 'Bomba Caldera'}</text>
+
+                    {/* 3. Colector / Aguja Hidráulica */}
+                    {config === 'open' ? (
+                      <React.Fragment>
+                        <rect x="250" y="120" width="40" height="190" fill="#94a3b8" rx="12" />
+                        <text x="270" y="105" fill="#475569" fontSize="12" fontWeight="bold" textAnchor="middle">Aguja Hidráulica</text>
+                      </React.Fragment>
+                    ) : (
+                      <React.Fragment>
+                        <rect x="250" y="140" width="10" height="20" fill="#64748b" />
+                        <rect x="250" y="270" width="10" height="20" fill="#64748b" />
+                        <text x="260" y="130" fill="#dc2626" fontSize="12" fontWeight="bold" textAnchor="middle">Cerrado</text>
+                      </React.Fragment>
+                    )}
+
+                    {/* 4. Bombas de Zona */}
+                    <circle cx="390" cy="80" r="18" fill="#3b82f6" stroke="#ffffff" strokeWidth="2" className={config !== 'open' ? "pulse-error" : ""} />
+                    <text x="390" y="84" fill="white" fontSize="12" fontWeight="bold" textAnchor="middle">Z1</text>
+                    <text x="390" y="55" fill="#64748b" fontSize="10" fontWeight="bold" textAnchor="middle">Bomba Radiadores</text>
+                    
+                    <circle cx="390" cy="220" r="18" fill="#3b82f6" stroke="#ffffff" strokeWidth="2" className={config !== 'open' ? "pulse-error" : ""} />
+                    <text x="390" y="224" fill="white" fontSize="12" fontWeight="bold" textAnchor="middle">Z2</text>
+                    <text x="390" y="195" fill="#64748b" fontSize="10" fontWeight="bold" textAnchor="middle">Bomba Calefacción</text>
+
+                    {/* 5. Sectores de Consumo */}
+                    <rect x="450" y="50" width="80" height="60" fill="#fee2e2" stroke="#fca5a5" strokeWidth="2" rx="4" />
+                    <text x="490" y="84" fill="#b91c1c" fontSize="12" fontWeight="bold" textAnchor="middle">Radiadores</text>
+                    
+                    <rect x="450" y="190" width="80" height="60" fill="#fee2e2" stroke="#fca5a5" strokeWidth="2" rx="4" />
+                    <text x="490" y="224" fill="#b91c1c" fontSize="12" fontWeight="bold" textAnchor="middle">Calefacción</text>
+                  </svg>
+                </div>
+              </div>
+              
+              <div className={`mt-4 px-4 py-3 border rounded-xl font-semibold text-sm text-center ${currentData.statusColor}`}>
+                Estado del Sistema: {currentData.status}
+              </div>
+            </div>
+
+            {/* DATOS CALCULADOS Y EXPLICACIÓN */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              <div className="lg:col-span-1 space-y-4">
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                  <h2 className="text-xl font-bold mb-3 text-slate-800">{currentData.title}</h2>
+                  <p className="text-slate-600 text-sm leading-relaxed">{currentData.description}</p>
+                </div>
+                
+                <div className="bg-slate-800 text-white p-5 rounded-2xl shadow-sm">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Caudal Primario</p>
+                  <p className="text-3xl font-black">{currentData.systemFlow} <span className="text-base font-medium text-slate-300">m³/h</span></p>
+                  <div className="h-px bg-slate-600 my-4"></div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Potencia Eléctrica (3 Bombas)</p>
+                  <p className="text-3xl font-black text-orange-400">{currentData.totalPower} <span className="text-base font-medium text-slate-300">W</span></p>
+                </div>
+              </div>
+
+              <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                
+                {/* Bomba Caldera */}
+                <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 col-span-1 sm:col-span-2 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-red-100 p-3 rounded-full text-red-600">
+                      <PumpIcon className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-800">Bomba Caldera</h3>
+                      <p className="text-sm text-slate-500">Circuito Primario</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm w-full sm:w-auto text-right">
+                    <div><span className="block text-slate-400 text-xs">Caudal</span><span className="font-bold">{currentData.pumpBoiler.flow} m³/h</span></div>
+                    <div><span className="block text-slate-400 text-xs">P. Entrada</span><span className="font-bold">{currentData.pumpBoiler.pIn} bar</span></div>
+                    <div><span className="block text-slate-400 text-xs">P. Salida</span><span className="font-bold">{currentData.pumpBoiler.pOut} bar</span></div>
+                    <div><span className="block text-slate-400 text-xs">Potencia</span><span className="font-bold text-orange-600">{currentData.pumpBoiler.power} W</span></div>
+                  </div>
+                </div>
+
+                {/* Bomba Z1 */}
+                <div className={`p-5 rounded-2xl shadow-sm border ${config==='open'?'bg-white border-slate-200':(config==='overpowered'?'bg-purple-50 border-purple-300':'bg-red-50 border-red-200')}`}>
+                  <div className="flex items-center gap-2 mb-4 border-b border-slate-200/50 pb-3">
+                    <PumpIcon className="w-5 h-5 text-blue-600" />
+                    <h3 className="text-md font-bold text-slate-800">Bomba Z1 (Radiadores)</h3>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex justify-between"><span className="text-slate-500">Caudal aportado</span><span className="font-semibold">{currentData.pump1.flow} m³/h</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">Presión entrada</span><span className="font-semibold">{currentData.pump1.pIn} bar</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">Presión salida</span><span className="font-semibold">{currentData.pump1.pOut} bar</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">Diferencial (ΔP)</span><span className="font-semibold text-blue-600">+{currentData.pump1.deltaP} bar</span></div>
+                  </div>
+                </div>
+
+                {/* Bomba Z2 */}
+                <div className={`p-5 rounded-2xl shadow-sm border ${config==='open'?'bg-white border-slate-200':(config==='overpowered'?'bg-purple-50 border-purple-300':'bg-red-50 border-red-200')}`}>
+                  <div className="flex items-center gap-2 mb-4 border-b border-slate-200/50 pb-3">
+                    <PumpIcon className="w-5 h-5 text-blue-600" />
+                    <h3 className="text-md font-bold text-slate-800">Bomba Z2 (Calefacción)</h3>
+                  </div>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex justify-between"><span className="text-slate-500">Caudal aportado</span><span className="font-semibold">{currentData.pump2.flow} m³/h</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">Presión entrada</span><span className="font-semibold">{currentData.pump2.pIn} bar</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">Presión salida</span><span className="font-semibold">{currentData.pump2.pOut} bar</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">Diferencial (ΔP)</span><span className="font-semibold text-blue-600">+{currentData.pump2.deltaP} bar</span></div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* ALERTA DE RIESGOS */}
+              {config === 'closed' && (
+                <div className="lg:col-span-2 bg-red-50 border-l-4 border-red-500 p-5 rounded-r-xl shadow-sm mt-2">
+                  <h4 className="text-red-800 font-bold text-lg flex items-center gap-2 mb-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    Riesgos de Averías y Pérdida de Durabilidad
+                  </h4>
+                  <ul className="list-disc list-inside space-y-2 text-sm text-red-700">
+                    <li><strong>Desgaste prematuro mecánico:</strong> Al frenarse mutuamente, los rodamientos sufren estrés excesivo, acortando la vida de los circuladores.</li>
+                    <li><strong>Riesgo de cavitación:</strong> Burbujas de vapor que implotan destruyendo el rodete.</li>
+                    <li><strong>Sobrecalentamiento:</strong> Mayor temperatura del motor por consumo ineficiente.</li>
+                    <li><strong>Daños colaterales:</strong> Fugas, rotura de válvulas y ruidos molestos (silbidos) en radiadores.</li>
+                  </ul>
+                </div>
+              )}
+
+              {/* ALERTA CRÍTICA: EFECTO TURBINA */}
+              {config === 'overpowered' && (
+                <div className="lg:col-span-2 bg-purple-100 border-l-4 border-purple-600 p-5 rounded-r-xl shadow-sm mt-2">
+                  <h4 className="text-purple-900 font-bold text-lg flex items-center gap-2 mb-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    ¡PELIGRO GRAVE! Consecuencias del Desequilibrio de Potencias
+                  </h4>
+                  <p className="text-purple-800 text-sm mb-3">
+                    La enorme presión obliga al agua a atravesar las bombas a la fuerza. Provoca averías inminentes:
+                  </p>
+                  <ul className="list-disc list-inside space-y-2 text-sm text-purple-800">
+                    <li><strong>El "Efecto Turbina" (Rotura Electrónica):</strong> El agua empuja el rodete más rápido que el motor. El motor actúa como generador eléctrico y envía voltaje de vuelta, quemando las placas base.</li>
+                    <li><strong>Destrucción de Rodamientos:</strong> El flujo turbulento destaza los cojinetes de las pequeñas bombas.</li>
+                    <li><strong>Cavitación en la Caldera:</strong> La bomba choca con el "cuello de botella" y se cavita a sí misma.</li>
+                    <li><strong>Derroche Energético:</strong> La BC consume 180W solo para luchar contra la tubería estrecha.</li>
+                  </ul>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<PumpSimulation />);
+  </script>
+</body>
+</html>
